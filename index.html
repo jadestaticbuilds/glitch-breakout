@@ -28,7 +28,7 @@ try {
   button:active{background:#0f2a3d}
   #msg{text-align:center;min-height:20px;font-size:14px;color:#ff2e88}
   #hint{text-align:center;font-size:12px;color:#8fb8c4;padding:0 8px 4px;line-height:1.4}
-  footer{text-align:center;font-size:11px;color:#6f8d99;padding:4px 8px calc(10px + env(safe-area-inset-bottom))}
+  footer{text-align:center;font-size:11px;color:#6f8d99;padding:4px 8px calc(10px + env(safe-area-inset-bottom));padding-bottom:34px;padding-bottom:max(34px, calc(10px + env(safe-area-inset-bottom)))}
   @media (prefers-reduced-motion: reduce){canvas{box-shadow:none}}
   /* Seasonal themes: a body class swaps the page chrome, while the
      canvas board is drawn per theme in draw(). To add a holiday,
