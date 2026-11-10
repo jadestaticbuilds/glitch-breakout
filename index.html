@@ -40,6 +40,12 @@ try {
   .theme-spooky button{border-color:#b06a1e}
   .theme-spooky #msg{color:#ff9b1a}
   .theme-spooky footer{color:#8d7a99}
+  .theme-jade h1{color:#ffd76a;text-shadow:0 0 12px rgba(255,215,106,.5)}
+  .theme-jade #scores #level{color:#35d99a}
+  .theme-jade canvas{background:#04120b;border-color:#1d7a4f;box-shadow:0 0 24px rgba(53,217,154,.16)}
+  .theme-jade button{border-color:#2fae72}
+  .theme-jade #msg{color:#ffd76a}
+  .theme-jade footer{color:#7a9987}
   @media (max-width:380px){
     h1{font-size:17px}
     #scores{font-size:12px}
@@ -98,6 +104,9 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
   var BOARD_W = 400, BOARD_H = 520;
   var BASE_PADDLE_W = 80, WIDE_PADDLE_W = 120, MAX_BALLS = 6;
   var MAX_BALL_SPEED = 5.5, MIN_VERTICAL_SPEED = 1.2;
+  /* Overhaul: the speed cap itself climbs with the level, so late
+     levels can actually reach the pace the launch curve promises. */
+  function maxBallSpeed(){ return Math.min(MAX_BALL_SPEED + (level - 1) * 0.45, 8.6); }
   var EXPAND_MS = 12000, LEVEL_CLEAR_MS = 900;
 
   var canvas = document.getElementById("game");
@@ -145,7 +154,7 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
       ball: { color: "#ffffff", glow: "#00f0ff", trail: null },
       particles: ["#00f0ff", "#ff2e88"],
       glitchA: "rgba(0,240,255,0.45)", glitchB: "rgba(255,46,136,0.45)",
-      startLine1: "The grid is corrupted. 40 bricks of static.",
+      startLine1: "The grid is corrupted. 32 bricks of static.",
       startLine2: "Drag or arrow keys. Keep the signal alive.",
       overTitle: "SIGNAL LOST", overTitleColor: "#ff2e88",
       overLine2: "Press Start to jack back in."
@@ -159,10 +168,24 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
       ball: { color: "#ff9b1a", glow: "#ff9b1a", trail: "#ff9b1a" },
       particles: ["#ff9b1a", "#c81e3a", "#7a2cf0"],
       glitchA: "rgba(255,155,26,0.45)", glitchB: "rgba(122,44,240,0.45)",
-      startLine1: "The veil is thin tonight. 40 bricks of static.",
+      startLine1: "The veil is thin tonight. 32 bricks of static.",
       startLine2: "Drag or arrow keys. Send them back.",
       overTitle: "CLAIMED", overTitleColor: "#ff9b1a",
       overLine2: "Press Start to rise again."
+    },
+    jade: {
+      name: "Jade Circuit",
+      grid: "rgba(53,217,154,0.05)",
+      moon: false, mist: false, plate: true,
+      bricks: ["#1d7a4f", "#27a568", "#35d99a", "#14532d"],
+      paddle: "#2fae72",
+      ball: { color: "#ffd76a", glow: "#ffca3a", trail: "#c9971c" },
+      particles: ["#35d99a", "#ffd76a", "#27a568"],
+      glitchA: "rgba(53,217,154,0.5)", glitchB: "rgba(255,215,106,0.5)",
+      startLine1: "The circuit is dark. 32 jade tiles wait.",
+      startLine2: "Drag or arrow keys. Light every trace.",
+      overTitle: "CIRCUIT BROKEN", overTitleColor: "#ffd76a",
+      overLine2: "Press Start to light it again."
     }
   };
   var SEASON_DEFAULTS = [
@@ -182,15 +205,15 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
     return "classic";
   }
   var themeId = loadStored("gb-theme", null);
-  if (!themeId || !THEMES[themeId]) themeId = seasonalDefault();
+  if (!themeId || !THEMES[themeId]) themeId = "jade"; /* Jade Circuit is the default theme; a stored choice still wins. */
   var THEME = THEMES[themeId];
   var themeBtn = document.getElementById("themeBtn");
-  try { document.body.classList.toggle("theme-spooky", themeId === "spooky"); } catch (e) {}
+  try { document.body.classList.toggle("theme-spooky", themeId === "spooky"); document.body.classList.toggle("theme-jade", themeId === "jade"); } catch (e) {}
   themeBtn.textContent = "Theme: " + THEME.name;
   function applyTheme(id){
     themeId = THEMES[id] ? id : "classic";
     THEME = THEMES[themeId];
-    try { document.body.classList.toggle("theme-spooky", themeId === "spooky"); } catch (e) {}
+    try { document.body.classList.toggle("theme-spooky", themeId === "spooky"); document.body.classList.toggle("theme-jade", themeId === "jade"); } catch (e) {}
     themeBtn.textContent = "Theme: " + THEME.name;
     saveStored("gb-theme", themeId);
     /* Recolor the current wall to the theme palette. Layouts, HP, and
@@ -220,6 +243,11 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
   var balls = [], bricks = [], particles = [], glitches = [], powerups = [];
   var keys = {};
   var audioCtx = null;
+  /* Jade Circuit background plate: AI-generated carved-stone asset
+     (build-time asset, no runtime ML). Drawn only for the jade theme. */
+  var plateImg = new Image(), plateReady = false;
+  plateImg.onload = function(){ plateReady = true; if (!running) draw(); };
+  plateImg.src = "jade-plate.webp";
 
   function blip(freq, dur){
     if (!soundOn) return;
@@ -240,9 +268,17 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
     if (paddle.x > BOARD_W - paddle.w - 4) paddle.x = BOARD_W - paddle.w - 4;
   }
   function ballSpeed(){
-    /* A bit faster than the last fix, per 60Hz tick: about 138 px/s
-       at level 1, rising gently, capped well below the old fast pace. */
-    return Math.min(2.3 + (level - 1) * 0.2, 3.4);
+    /* Overhaul launch curve: George's verdict on v1 was that
+       the first levels were too easy, so level 1 now starts at 2.7
+       (~162 px/s) instead of the live game's 2.3. Each level adds
+       0.3; the cap is 4.8, reached at level 8. */
+    return Math.min(2.7 + (level - 1) * 0.3, 4.8);
+  }
+  /* Overhaul paddle squeeze: from level 4 the paddle narrows 4px
+     per level, floor 60px (live game: always 80). Expand power-up
+     still widens to 120 and restores to this level's width. */
+  function basePaddleW(){
+    return Math.max(BASE_PADDLE_W - Math.max(0, level - 3) * 4, 60);
   }
   function resetBall(){
     var s = ballSpeed();
@@ -302,9 +338,17 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
       var row = pattern[r];
       for (var c = 0; c < cols; c++) {
         if (row.charAt(c) !== "X") continue;
+        /* Overhaul: 32-brick walls (skip every 5th brick) —
+           shorter levels per George's verdict. Patterns, drop
+           rates, and armor rules apply to the bricks that remain. */
+        if (idx % 5 === 4) { idx++; continue; }
         var hp = 1;
         if (hpThree && idx % 4 === 0) hp = 3;
         else if (hpTwo && idx % 4 === 2) hp = 2;
+        /* Overhaul: the v1 extra-armor lines (L6+/L8+) were
+           REMOVED — George's verdict was that levels take too long,
+           and hit-count was a length cause, not a difficulty win.
+           Difficulty now comes from speed, rally, and paddle. */
         var drop = null;
         if (Math.random() < 0.2) {
           var pick = Math.random();
@@ -312,7 +356,7 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
           if (drop === "S" && bricks.some(function(b){ return b.drop === "S"; })) drop = "E";
         }
         bricks.push({ x: x0 + c * (bw + gap), y: 46 + r * (bh + gap), w: bw, h: bh,
-                      color: colors[r % colors.length], hp: hp, alive: true, drop: drop, row: r });
+                      color: colors[r % colors.length], hp: hp, maxHp: hp, alive: true, drop: drop, row: r });
         idx++;
       }
     }
@@ -321,7 +365,7 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
     score = 0; lives = 3; level = 1; shield = false;
     gameOver = false; finalScore = 0;
     expandEndsAt = 0; levelClearEndsAt = 0;
-    paddle.w = BASE_PADDLE_W; paddle.x = BOARD_W / 2 - BASE_PADDLE_W / 2;
+    paddle.w = basePaddleW(); paddle.x = BOARD_W / 2 - basePaddleW() / 2;
     particles = []; glitches = []; powerups = [];
     buildBricks(level); resetBall(); updateHud();
     levelEl.textContent = level;
@@ -350,7 +394,8 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
   /* Keep a ball playable: never flat-horizontal, never runaway fast. */
   function fixBall(b){
     var speed = Math.sqrt(b.vx * b.vx + b.vy * b.vy) || ballSpeed();
-    if (speed > MAX_BALL_SPEED) { b.vx *= MAX_BALL_SPEED / speed; b.vy *= MAX_BALL_SPEED / speed; }
+    var cap = maxBallSpeed();
+    if (speed > cap) { b.vx *= cap / speed; b.vy *= cap / speed; }
     if (Math.abs(b.vy) < MIN_VERTICAL_SPEED) {
       b.vy = b.vy >= 0 ? MIN_VERTICAL_SPEED : -MIN_VERTICAL_SPEED;
     }
@@ -388,7 +433,7 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
   }
   function expireExpand(){
     if (expandEndsAt && Date.now() > expandEndsAt) {
-      paddle.w = BASE_PADDLE_W; expandEndsAt = 0; clampPaddle();
+      paddle.w = basePaddleW(); expandEndsAt = 0; clampPaddle();
     }
   }
 
@@ -401,8 +446,8 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
         return; /* Brief pause between levels: balls and paddle hold still. */
       }
     }
-    if (keys.ArrowLeft || keys.a) paddle.x -= 5.5 * dt;
-    if (keys.ArrowRight || keys.d) paddle.x += 5.5 * dt;
+    if (keys.ArrowLeft || keys.a) paddle.x -= 6.2 * dt;
+    if (keys.ArrowRight || keys.d) paddle.x += 6.2 * dt;
     clampPaddle();
     expireExpand();
 
@@ -442,11 +487,13 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
           if (br.hp > 1) {
             /* Armored brick: chip it, no drop yet, points for the crack. */
             br.hp -= 1;
+            b.vx *= 1.005; b.vy *= 1.005; /* Overhaul rally pressure (chip) */
             score += 5; updateHud();
             shatter(br); blip(520, 0.06);
             msgEl.textContent = br.hp > 1 ? "Cracked. " + br.hp + " hits to go." : "One more hit.";
           } else {
             br.alive = false;
+            b.vx *= 1.012; b.vy *= 1.012; /* Overhaul rally pressure: stronger than v1 — levels should end, not drag. */
             score += 10; updateHud();
             shatter(br); blip(660, 0.07);
             if (br.drop) powerups.push({ x: br.x + br.w / 2, y: br.y + br.h, type: br.drop });
@@ -494,8 +541,9 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
     if (running && balls.length > 0 && lives > 0 &&
         bricks.every(function(br){ return !br.alive; })) {
       level++; score += 50; updateHud();
+      if (!expandEndsAt) { paddle.w = basePaddleW(); clampPaddle(); } /* Overhaul squeeze applies on level-up */
       levelEl.textContent = level;
-      msgEl.textContent = "Level " + level + "! New wall, a little faster.";
+      msgEl.textContent = "Level " + level + "! New wall, faster, meaner.";
       levelClearEndsAt = Date.now() + LEVEL_CLEAR_MS;
       balls = []; /* Cleared balls are replaced when the pause ends. */
     }
@@ -508,6 +556,119 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
     for (var g = glitches.length - 1; g >= 0; g--) {
       glitches[g].life -= dt;
       if (glitches[g].life <= 0) glitches.splice(g, 1);
+    }
+  }
+
+  /* Jade Circuit brick rendering: real stone tiles, not flat rects.
+     Bevelled edges, a vertical light gradient, a diagonal sheen,
+     stone speckle, engraved circuit traces, and cracks once hit. */
+  function shade(hex, f){
+    var n = parseInt(hex.slice(1), 16);
+    var r = Math.min(255, Math.max(0, Math.round(((n >> 16) & 255) * f)));
+    var g = Math.min(255, Math.max(0, Math.round(((n >> 8) & 255) * f)));
+    var b = Math.min(255, Math.max(0, Math.round((n & 255) * f)));
+    return "rgb(" + r + "," + g + "," + b + ")";
+  }
+  function rrPath(x, y, w, h, r){
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+  function drawDeepBrick(br){
+    var x = br.x, y = br.y, w = br.w, h = br.h;
+    /* Body with lift shadow and a top-lit stone gradient. */
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,0.55)"; ctx.shadowBlur = 5; ctx.shadowOffsetY = 2;
+    rrPath(x, y, w, h, 5);
+    var grad = ctx.createLinearGradient(x, y, x, y + h);
+    grad.addColorStop(0, shade(br.color, 1.55));
+    grad.addColorStop(0.45, br.color);
+    grad.addColorStop(1, shade(br.color, 0.5));
+    ctx.fillStyle = grad; ctx.fill();
+    ctx.restore();
+    /* Inset face panel: the tile reads as a set stone, not a sticker. */
+    rrPath(x + 3, y + 3, w - 6, h - 6, 3);
+    ctx.fillStyle = "rgba(0,0,0,0.14)"; ctx.fill();
+    /* Diagonal sheen across the face. */
+    ctx.save();
+    rrPath(x, y, w, h, 5); ctx.clip();
+    var sheen = ctx.createLinearGradient(x, y, x + w, y + h);
+    sheen.addColorStop(0, "rgba(255,255,255,0.14)");
+    sheen.addColorStop(0.35, "rgba(255,255,255,0.02)");
+    sheen.addColorStop(0.65, "rgba(0,0,0,0.04)");
+    sheen.addColorStop(1, "rgba(0,0,0,0.18)");
+    ctx.fillStyle = sheen; ctx.fillRect(x, y, w, h);
+    ctx.restore();
+    /* Bevel light: lit top and left, shadowed bottom and right. */
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = "rgba(255,255,255,0.42)";
+    ctx.beginPath(); ctx.moveTo(x + 4, y + 1.2); ctx.lineTo(x + w - 4, y + 1.2); ctx.stroke();
+    ctx.strokeStyle = "rgba(255,255,255,0.20)";
+    ctx.beginPath(); ctx.moveTo(x + 1.2, y + 4); ctx.lineTo(x + 1.2, y + h - 4); ctx.stroke();
+    ctx.strokeStyle = "rgba(0,0,0,0.5)";
+    ctx.beginPath(); ctx.moveTo(x + 4, y + h - 1.2); ctx.lineTo(x + w - 4, y + h - 1.2); ctx.stroke();
+    ctx.strokeStyle = "rgba(0,0,0,0.32)";
+    ctx.beginPath(); ctx.moveTo(x + w - 1.2, y + 4); ctx.lineTo(x + w - 1.2, y + h - 4); ctx.stroke();
+    /* Stone speckle, deterministic per tile. */
+    for (var i = 0; i < 5; i++) {
+      var s = (br.x * 31 + br.y * 17 + i * 47) % 997;
+      var sx = x + 3 + (s % Math.max(1, w - 6));
+      var sy = y + 3 + ((s >> 3) % Math.max(1, h - 6));
+      ctx.fillStyle = i % 2 ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.13)";
+      ctx.beginPath(); ctx.arc(sx, sy, 1, 0, Math.PI * 2); ctx.fill();
+    }
+    if (themeId === "spooky") {
+      /* Carved gothic arch, same depth standard as Jade Circuit:
+         dark groove first, a dim candlelit line laid into it. */
+      var ax = br.x + br.w / 2, aw = Math.min(9, br.w * 0.24);
+      for (var pass2 = 0; pass2 < 2; pass2++) {
+        ctx.strokeStyle = pass2 ? "rgba(255,205,140,0.55)" : "rgba(0,0,0,0.5)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(ax - aw, br.y + br.h - 3.5 + (pass2 ? 0 : 0.8));
+        ctx.lineTo(ax - aw, br.y + br.h * 0.48 + (pass2 ? 0 : 0.8));
+        ctx.arc(ax, br.y + br.h * 0.48 + (pass2 ? 0 : 0.8), aw, Math.PI, 0);
+        ctx.lineTo(ax + aw, br.y + br.h - 3.5 + (pass2 ? 0 : 0.8));
+        ctx.stroke();
+      }
+    } else {
+      /* Engraved circuit traces: dark groove first, light line on top. */
+      var seed = (br.x * 7 + br.y * 13) % 4;
+      var midX = br.x + br.w * (0.35 + seed * 0.1);
+      var endY = br.y + (seed % 2 ? 3.5 : br.h - 3.5);
+      for (var pass = 0; pass < 2; pass++) {
+        ctx.strokeStyle = pass ? "rgba(165,255,205,0.6)" : "rgba(0,0,0,0.5)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(br.x + 4, br.y + br.h / 2 + (pass ? 0 : 0.8));
+        ctx.lineTo(midX, br.y + br.h / 2 + (pass ? 0 : 0.8));
+        ctx.lineTo(midX, endY + (pass ? 0 : 0.8));
+        ctx.stroke();
+      }
+      ctx.fillStyle = "rgba(200,255,225,0.8)";
+      ctx.beginPath(); ctx.arc(br.x + 4, br.y + br.h / 2, 1.6, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(midX, endY, 1.6, 0, Math.PI * 2); ctx.fill();
+    }
+    /* Cracks once the tile has taken a hit: jagged, branching. */
+    if (br.maxHp && br.hp < br.maxHp) {
+      ctx.strokeStyle = "rgba(2,18,9,0.85)"; ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.moveTo(br.x + br.w * 0.18, br.y + 1);
+      ctx.lineTo(br.x + br.w * 0.34, br.y + br.h * 0.38);
+      ctx.lineTo(br.x + br.w * 0.27, br.y + br.h * 0.62);
+      ctx.lineTo(br.x + br.w * 0.42, br.y + br.h - 1);
+      ctx.moveTo(br.x + br.w * 0.34, br.y + br.h * 0.38);
+      ctx.lineTo(br.x + br.w * 0.52, br.y + br.h * 0.5);
+      if (br.hp < br.maxHp - 1) {
+        ctx.moveTo(br.x + br.w * 0.78, br.y + 2);
+        ctx.lineTo(br.x + br.w * 0.64, br.y + br.h * 0.45);
+        ctx.lineTo(br.x + br.w * 0.72, br.y + br.h - 2);
+      }
+      ctx.stroke();
     }
   }
 
@@ -541,6 +702,7 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
 
   function draw(){
     ctx.clearRect(0, 0, BOARD_W, BOARD_H);
+    if (THEME.plate && plateReady) ctx.drawImage(plateImg, 0, 0, BOARD_W, BOARD_H);
     if (THEME.moon) drawMoon();
     ctx.strokeStyle = THEME.grid; ctx.lineWidth = 1;
     for (var gx = 0; gx <= BOARD_W; gx += 40) { ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, BOARD_H); ctx.stroke(); }
@@ -548,7 +710,8 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
     if (THEME.mist) drawMist();
     bricks.forEach(function(br){
       if (!br.alive) return;
-      ctx.fillStyle = br.color; ctx.fillRect(br.x, br.y, br.w, br.h);
+      if (themeId === "jade" || themeId === "spooky") { drawDeepBrick(br); }
+      else { ctx.fillStyle = br.color; ctx.fillRect(br.x, br.y, br.w, br.h); }
       /* Armored bricks wear their hits: white ring for 2-hit,
          magenta ring for 3-hit. */
       if (br.hp > 1) {
@@ -612,8 +775,8 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
         ctx.fillStyle = "#8fb8c4"; ctx.font = "14px system-ui";
         ctx.fillText(THEME.overLine2, BOARD_W / 2, BOARD_H / 2 + 30);
       } else {
-        ctx.fillStyle = "#00f0ff"; ctx.font = "bold 22px system-ui";
-        ctx.fillText("GLITCH BREAKOUT", BOARD_W / 2, BOARD_H / 2 - 24);
+        ctx.fillStyle = themeId === "jade" ? "#ffd76a" : "#00f0ff"; ctx.font = "bold 22px system-ui";
+        ctx.fillText(themeId === "jade" ? "JADE CIRCUIT" : "GLITCH BREAKOUT", BOARD_W / 2, BOARD_H / 2 - 24);
         ctx.fillStyle = "#e8fbff"; ctx.font = "15px system-ui";
         ctx.fillText(THEME.startLine1, BOARD_W / 2, BOARD_H / 2 + 4);
         ctx.fillStyle = "#8fb8c4"; ctx.font = "14px system-ui";
@@ -668,7 +831,8 @@ html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;us
   startBtn.addEventListener("click", start);
   pauseBtn.addEventListener("click", togglePause);
   themeBtn.addEventListener("click", function(){
-    applyTheme(themeId === "spooky" ? "classic" : "spooky");
+    var order = ["classic", "spooky", "jade"];
+    applyTheme(order[(order.indexOf(themeId) + 1) % order.length]);
     blip(520, 0.08);
   });
   soundBtn.addEventListener("click", function(){
